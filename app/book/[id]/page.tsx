@@ -254,6 +254,29 @@ export default function BookingPage() {
           }
         }
 
+        // Check if this court has a lesson for this time slot
+        if (isAvailable) {
+          const { data: existingLessons } = await supabase
+            .from('lessons')
+            .select('id, start_time, end_time')
+            .eq('court_id', court.id)
+            .eq('lesson_date', bookingDate);
+          
+          if (existingLessons && existingLessons.length > 0) {
+            // Check for time overlap
+            for (const lesson of existingLessons as any[]) {
+              const lessonStart = lesson.start_time;
+              const lessonEnd = lesson.end_time;
+              
+              // Check if times overlap: our start < lesson end AND our end > lesson start
+              if (startTime < lessonEnd && endTime > lessonStart) {
+                isAvailable = false;
+                break;
+              }
+            }
+          }
+        }
+
         // Check for memberships that block this time slot
         if (isAvailable && teren) {
           const bookingDayOfWeek = bookingDateObj.getDay(); // 0 = Sunday, 6 = Saturday
@@ -532,6 +555,7 @@ export default function BookingPage() {
                                     
                                     const membershipBlocked = courtBlockedByMembership.has(court.id);
                                     const isAvailable = bookingAvailable && !isBlocked && !membershipBlocked;
+                                    const isBooked = !bookingAvailable;
                                     const displayText = !bookingAvailable 
                                       ? 'Ocupat' 
                                       : isBlocked 
@@ -552,8 +576,10 @@ export default function BookingPage() {
                                             onClick={() => isAvailable && setSelectedCourt(court.id)}
                                             disabled={!isAvailable}
                                             className={`
-                                                py-3 px-4 rounded-md text-sm font-semibold border transition-all
-                                                ${!isAvailable
+                                                py-3 px-4 rounded-md text-sm font-semibold border transition-all relative
+                                                ${isBooked
+                                                    ? "bg-red-50 text-red-600 border-red-200 cursor-not-allowed"
+                                                    : !isAvailable
                                                     ? "bg-zinc-100 text-zinc-400 border-zinc-200 cursor-not-allowed opacity-50"
                                                     : isSelected
                                                     ? "bg-blue-600 text-white border-blue-600 shadow-md transform scale-105" 
@@ -561,10 +587,15 @@ export default function BookingPage() {
                                             `}
                                             title={tooltipText}
                                         >
-                                            {court.name}
-                                            {displayText && (
-                                                <span className="block text-xs mt-1">{displayText}</span>
-                                            )}
+                                            <div className="flex flex-col items-center">
+                                                <span>{court.name}</span>
+                                                {isAvailable && !isSelected && (
+                                                    <span className="text-xs mt-1 font-medium text-emerald-600">Liber</span>
+                                                )}
+                                                {displayText && (
+                                                    <span className="block text-xs mt-1">{displayText}</span>
+                                                )}
+                                            </div>
                                         </button>
                                     );
                                 })}

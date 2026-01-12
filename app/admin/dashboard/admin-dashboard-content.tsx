@@ -57,6 +57,40 @@ interface Booking {
   } | null;
 }
 
+interface Trainer {
+  id: string;
+  field_id: string;
+  name: string;
+  phone: string | null;
+  email: string | null;
+  notes: string | null;
+  is_active: boolean;
+  created_at: string;
+}
+
+interface Lesson {
+  id: string;
+  field_id: string;
+  court_id: string | null;
+  trainer_id: string | null;
+  trainer_name: string | null;
+  trainer_phone: string | null;
+  lesson_date: string;
+  start_time: string;
+  end_time: string;
+  duration_minutes: number;
+  created_at: string;
+  courts: {
+    id: string;
+    name: string;
+  } | null;
+  trainers: {
+    id: string;
+    name: string;
+    phone: string | null;
+  } | null;
+}
+
 export function AdminDashboardContent() {
   const router = useRouter();
   const [user, setUser] = useState<any>(null);
@@ -80,6 +114,23 @@ export function AdminDashboardContent() {
   const [unavailableSlots, setUnavailableSlots] = useState<Set<string>>(new Set());
   const [unavailableCourts, setUnavailableCourts] = useState<Map<string, Set<string>>>(new Map());
   const [memberships, setMemberships] = useState<any[]>([]);
+  const [lessons, setLessons] = useState<Lesson[]>([]);
+  const [trainers, setTrainers] = useState<Trainer[]>([]);
+  const [showAddLesson, setShowAddLesson] = useState(false);
+  const [showManageTrainers, setShowManageTrainers] = useState(false);
+  const [lessonDate, setLessonDate] = useState<Date>(new Date());
+  const [newLesson, setNewLesson] = useState({
+    trainerId: null as string | null,
+    startTime: '',
+    endTime: '',
+    courtId: null as string | null,
+  });
+  const [newTrainer, setNewTrainer] = useState({
+    name: '',
+    phone: '',
+    email: '',
+    notes: '',
+  });
   const [stats, setStats] = useState({
     todayRevenue: 0,
     todayBookings: 0,
@@ -163,7 +214,7 @@ export function AdminDashboardContent() {
     return () => subscription.unsubscribe();
   }, [router, selectedField]);
 
-  // Load courts when field changes
+  // Load courts and trainers when field changes
   useEffect(() => {
     if (!selectedField) return;
 
@@ -178,7 +229,29 @@ export function AdminDashboardContent() {
       setCourts(courtsData || []);
     }
 
+    async function loadTrainers() {
+      const { data: trainersData, error } = await supabase
+        .from('trainers')
+        .select('*')
+        .eq('field_id', selectedField)
+        .eq('is_active', true)
+        .order('name');
+
+      if (error) {
+        // If table doesn't exist yet, just set empty array
+        if (error.message.includes('relation "trainers" does not exist')) {
+          setTrainers([]);
+          return;
+        }
+        console.error('Error loading trainers:', error);
+        setTrainers([]);
+      } else {
+        setTrainers((trainersData || []) as Trainer[]);
+      }
+    }
+
     loadCourts();
+    loadTrainers();
   }, [selectedField]);
 
   // Calculate price for new booking
@@ -225,7 +298,14 @@ export function AdminDashboardContent() {
         .eq('booking_date', dateStr)
         .eq('status', 'confirmed');
 
-      if (!existingBookings) {
+      // Get all lessons for this field and date
+      const { data: existingLessons } = await supabase
+        .from('lessons')
+        .select('start_time, end_time, court_id')
+        .eq('field_id', selectedField)
+        .eq('lesson_date', dateStr);
+
+      if (!existingBookings && !existingLessons) {
         setUnavailableSlots(new Set());
         setUnavailableCourts(new Map());
         return;
@@ -240,33 +320,66 @@ export function AdminDashboardContent() {
         courtUnavailable.set(court.id, new Set());
       });
 
-      existingBookings.forEach((booking: any) => {
-        const startTime = booking.start_time.substring(0, 5); // HH:MM
-        const endTime = booking.end_time.substring(0, 5);
-        
-        // Check each time slot to see if it conflicts
-        timeSlots.forEach(slot => {
-          const slotStart = timeToMinutes(slot);
-          const slotEnd = slotStart + 120; // Check up to 2h slots
+      if (existingBookings) {
+        existingBookings.forEach((booking: any) => {
+          const startTime = booking.start_time.substring(0, 5); // HH:MM
+          const endTime = booking.end_time.substring(0, 5);
           
-          const bookingStart = timeToMinutes(startTime);
-          const bookingEnd = timeToMinutes(endTime);
-          
-          // Check if slot overlaps with booking
-          if (slotStart < bookingEnd && slotEnd > bookingStart) {
-            // If booking has a court, mark that specific court as unavailable
-            if (booking.court_id) {
-              const courtUnavail = courtUnavailable.get(booking.court_id);
-              if (courtUnavail) {
-                courtUnavail.add(slot);
+          // Check each time slot to see if it conflicts
+          timeSlots.forEach(slot => {
+            const slotStart = timeToMinutes(slot);
+            const slotEnd = slotStart + 120; // Check up to 2h slots
+            
+            const bookingStart = timeToMinutes(startTime);
+            const bookingEnd = timeToMinutes(endTime);
+            
+            // Check if slot overlaps with booking
+            if (slotStart < bookingEnd && slotEnd > bookingStart) {
+              // If booking has a court, mark that specific court as unavailable
+              if (booking.court_id) {
+                const courtUnavail = courtUnavailable.get(booking.court_id);
+                if (courtUnavail) {
+                  courtUnavail.add(slot);
+                }
+              } else {
+                // If no court, mark the slot as unavailable for all courts
+                unavailable.add(slot);
               }
-            } else {
-              // If no court, mark the slot as unavailable for all courts
-              unavailable.add(slot);
             }
-          }
+          });
         });
-      });
+      }
+
+      // Check lessons for conflicts
+      if (existingLessons) {
+        existingLessons.forEach((lesson: any) => {
+          const startTime = lesson.start_time.substring(0, 5); // HH:MM
+          const endTime = lesson.end_time.substring(0, 5);
+          
+          // Check each time slot to see if it conflicts
+          timeSlots.forEach(slot => {
+            const slotStart = timeToMinutes(slot);
+            const slotEnd = slotStart + 120; // Check up to 2h slots
+            
+            const lessonStart = timeToMinutes(startTime);
+            const lessonEnd = timeToMinutes(endTime);
+            
+            // Check if slot overlaps with lesson
+            if (slotStart < lessonEnd && slotEnd > lessonStart) {
+              // If lesson has a court, mark that specific court as unavailable
+              if (lesson.court_id) {
+                const courtUnavail = courtUnavailable.get(lesson.court_id);
+                if (courtUnavail) {
+                  courtUnavail.add(slot);
+                }
+              } else {
+                // If no court, mark the slot as unavailable for all courts
+                unavailable.add(slot);
+              }
+            }
+          });
+        });
+      }
 
       // Also check memberships for this date
       const dayOfWeek = bookingDate.getDay();
@@ -479,7 +592,42 @@ export function AdminDashboardContent() {
       setBookings((bookingsData as any[]) || []);
     }
 
+    async function loadLessons() {
+      const dateStr = format(selectedDate, 'yyyy-MM-dd');
+      
+      const { data: lessonsData, error: lessonsError } = await supabase
+        .from('lessons')
+        .select(`
+          *,
+          courts (
+            id,
+            name
+          ),
+          trainers (
+            id,
+            name,
+            phone
+          )
+        `)
+        .eq('field_id', selectedField)
+        .eq('lesson_date', dateStr)
+        .order('start_time');
+
+      if (lessonsError) {
+        // If table doesn't exist yet, just set empty array
+        if (lessonsError.message.includes('relation "lessons" does not exist')) {
+          setLessons([]);
+          return;
+        }
+        console.error('Error loading lessons:', lessonsError);
+        setLessons([]);
+      } else {
+        setLessons((lessonsData || []) as Lesson[]);
+      }
+    }
+
     loadBookings();
+    loadLessons();
   }, [selectedField, selectedDate]);
 
   // Load stats
@@ -588,13 +736,20 @@ export function AdminDashboardContent() {
     const durationMinutes = newBooking.duration === '1h' ? 60 : newBooking.duration === '1h30' ? 90 : 120;
 
     // Check if time slot is available
-    // Get all bookings for this field/date
-    const { data: allBookings } = await supabase
-      .from('bookings')
-      .select('id, start_time, end_time, court_id')
-      .eq('field_id', selectedField)
-      .eq('booking_date', bookingDateStr)
-      .eq('status', 'confirmed');
+      // Get all bookings for this field/date
+      const { data: allBookings } = await supabase
+        .from('bookings')
+        .select('id, start_time, end_time, court_id')
+        .eq('field_id', selectedField)
+        .eq('booking_date', bookingDateStr)
+        .eq('status', 'confirmed');
+
+      // Get all lessons for this field/date
+      const { data: allLessons } = await supabase
+        .from('lessons')
+        .select('id, start_time, end_time, court_id')
+        .eq('field_id', selectedField)
+        .eq('lesson_date', bookingDateStr);
 
     // Also check memberships
     const dayOfWeek = bookingDate.getDay();
@@ -628,7 +783,26 @@ export function AdminDashboardContent() {
       });
 
       if (hasConflict) {
-        alert('Acest interval orar este deja rezervat.');
+        alert('Acest interval orar este deja rezervat de o rezervare.');
+        return;
+      }
+    }
+
+    // Check for lesson conflicts
+    if (allLessons && allLessons.length > 0) {
+      const hasConflict = allLessons.some((existing: any) => {
+        const existingStart = existing.start_time;
+        const existingEnd = existing.end_time;
+        
+        if (newBooking.courtId && existing.court_id !== newBooking.courtId) {
+          return false;
+        }
+        
+        return startTime < existingEnd && endTime > existingStart;
+      });
+
+      if (hasConflict) {
+        alert('Acest interval orar este deja rezervat de o lecție.');
         return;
       }
     }
@@ -733,6 +907,159 @@ export function AdminDashboardContent() {
     }
 
     // Refresh stats
+    router.refresh();
+  };
+
+  const handleCreateLesson = async () => {
+    if (!selectedField || !newLesson.startTime || !newLesson.endTime || !newLesson.trainerId) {
+      alert('Te rugăm să completezi toate câmpurile obligatorii.');
+      return;
+    }
+
+    // For fields with courts, require court selection
+    if (courts.length > 0 && !newLesson.courtId) {
+      alert('Te rugăm să selectezi un teren.');
+      return;
+    }
+
+    // Validate time
+    const startMinutes = timeToMinutes(newLesson.startTime);
+    const endMinutes = timeToMinutes(newLesson.endTime);
+    if (endMinutes <= startMinutes) {
+      alert('Ora de sfârșit trebuie să fie după ora de început.');
+      return;
+    }
+
+    const lessonDateStr = format(lessonDate, 'yyyy-MM-dd');
+    const startTime = newLesson.startTime.includes(':') ? newLesson.startTime : newLesson.startTime + ':00';
+    const endTime = newLesson.endTime.includes(':') ? newLesson.endTime : newLesson.endTime + ':00';
+    const durationMinutes = endMinutes - startMinutes;
+
+    // Check if time slot is available (check bookings, memberships, and other lessons)
+    const { data: allBookings } = await supabase
+      .from('bookings')
+      .select('id, start_time, end_time, court_id')
+      .eq('field_id', selectedField)
+      .eq('booking_date', lessonDateStr)
+      .eq('status', 'confirmed');
+
+    const { data: allLessons } = await supabase
+      .from('lessons')
+      .select('id, start_time, end_time, court_id')
+      .eq('field_id', selectedField)
+      .eq('lesson_date', lessonDateStr);
+
+    // Check for booking conflicts
+    if (allBookings && allBookings.length > 0) {
+      const hasConflict = allBookings.some((existing: any) => {
+        if (newLesson.courtId && existing.court_id !== newLesson.courtId) {
+          return false;
+        }
+        return startTime < existing.end_time && endTime > existing.start_time;
+      });
+
+      if (hasConflict) {
+        alert('Acest interval orar este deja rezervat de o rezervare.');
+        return;
+      }
+    }
+
+    // Check for lesson conflicts
+    if (allLessons && allLessons.length > 0) {
+      const hasConflict = allLessons.some((existing: any) => {
+        if (existing.id === newLesson.courtId) return false; // Skip if same lesson
+        if (newLesson.courtId && existing.court_id !== newLesson.courtId) {
+          return false;
+        }
+        return startTime < existing.end_time && endTime > existing.start_time;
+      });
+
+      if (hasConflict) {
+        alert('Acest interval orar este deja rezervat de o lecție.');
+        return;
+      }
+    }
+
+    // Check memberships
+    const dayOfWeek = lessonDate.getDay();
+    const { data: membershipsData } = await supabase
+      .from('memberships')
+      .select('*')
+      .eq('field_id', selectedField)
+      .eq('day_of_week', dayOfWeek)
+      .lte('start_date', lessonDateStr)
+      .gte('end_date', lessonDateStr);
+
+    if (membershipsData && membershipsData.length > 0) {
+      for (const membership of membershipsData) {
+        if (membership.court_id === null || membership.court_id === newLesson.courtId) {
+          if (startTime < membership.end_time && endTime > membership.start_time) {
+            alert('Acest interval este deja rezervat de un membru cu abonament.');
+            return;
+          }
+        }
+      }
+    }
+
+    // Get trainer info for backward compatibility
+    const selectedTrainer = trainers.find(t => t.id === newLesson.trainerId);
+    
+    // Create lesson
+    const { data: lesson, error } = await supabase
+      .from('lessons')
+      .insert({
+        field_id: selectedField,
+        court_id: newLesson.courtId || null,
+        trainer_id: newLesson.trainerId,
+        trainer_name: selectedTrainer?.name || null,
+        trainer_phone: selectedTrainer?.phone || null,
+        lesson_date: lessonDateStr,
+        start_time: startTime,
+        end_time: endTime,
+        duration_minutes: durationMinutes,
+      } as any)
+      .select()
+      .single();
+
+    if (error) {
+      console.error('Error creating lesson:', error);
+      alert('Eroare la crearea lecției: ' + error.message);
+      return;
+    }
+
+    setShowAddLesson(false);
+    setNewLesson({
+      trainerId: null,
+      startTime: '',
+      endTime: '',
+      courtId: null,
+    });
+    setLessonDate(new Date());
+
+    // Refresh lessons for the selected date
+    const dateStr = format(selectedDate, 'yyyy-MM-dd');
+    const { data: updatedLessons } = await supabase
+      .from('lessons')
+      .select(`
+        *,
+        courts (
+          id,
+          name
+        ),
+        trainers (
+          id,
+          name,
+          phone
+        )
+      `)
+      .eq('field_id', selectedField)
+      .eq('lesson_date', dateStr)
+      .order('start_time');
+
+    if (updatedLessons) {
+      setLessons(updatedLessons as Lesson[]);
+    }
+
     router.refresh();
   };
 
@@ -891,6 +1218,27 @@ export function AdminDashboardContent() {
                     Adaugă Rezervare
                   </Button>
                   <Button
+                    variant="default"
+                    size="sm"
+                    onClick={() => {
+                      setLessonDate(selectedDate);
+                      setShowAddLesson(true);
+                    }}
+                    className="bg-purple-600 hover:bg-purple-700"
+                  >
+                    <Plus className="w-4 h-4 mr-2" />
+                    Adaugă Lecție
+                  </Button>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => setShowManageTrainers(true)}
+                    className="border-purple-300 text-purple-700 hover:bg-purple-50"
+                  >
+                    <Users className="w-4 h-4 mr-2" />
+                    Antrenori
+                  </Button>
+                  <Button
                     variant="outline"
                     size="sm"
                     onClick={() => {
@@ -923,12 +1271,49 @@ export function AdminDashboardContent() {
               </div>
             </CardHeader>
             <CardContent>
-              {bookings.length === 0 && memberships.length === 0 ? (
+              {bookings.length === 0 && memberships.length === 0 && lessons.length === 0 ? (
                 <div className="text-center py-12">
                   <p className="text-zinc-500">Nu sunt rezervări pentru această dată.</p>
                 </div>
               ) : (
                 <div className="space-y-3">
+                  {/* Display Lessons */}
+                  {lessons.map((lesson) => {
+                    const courtName = lesson.court_id 
+                      ? (lesson.courts?.name || 'Teren necunoscut')
+                      : 'Orice teren';
+                    const trainerName = lesson.trainers?.name || lesson.trainer_name || 'Antrenor necunoscut';
+                    const trainerPhone = lesson.trainers?.phone || lesson.trainer_phone;
+                    return (
+                      <div
+                        key={lesson.id}
+                        className="p-4 border-2 border-purple-300 bg-purple-50 rounded-md mb-3"
+                      >
+                        <div className="flex items-start justify-between">
+                          <div className="flex-1">
+                            <div className="flex items-center gap-3 mb-2">
+                              <Badge className="bg-purple-600 text-white">Lecție</Badge>
+                              <p className="font-semibold text-zinc-900">
+                                {lesson.start_time.substring(0, 5)} - {lesson.end_time.substring(0, 5)}
+                              </p>
+                            </div>
+                            <p className="text-sm text-zinc-700 font-medium mb-1">
+                              Antrenor: {trainerName}
+                            </p>
+                            {trainerPhone && (
+                              <p className="text-sm text-zinc-600 mb-1">
+                                Telefon: {trainerPhone}
+                              </p>
+                            )}
+                            <p className="text-sm text-zinc-500">
+                              {courtName} • {lesson.duration_minutes} min
+                            </p>
+                          </div>
+                        </div>
+                      </div>
+                    );
+                  })}
+
                   {/* Display Memberships */}
                   {memberships.map((membership) => {
                     const courtName = membership.court_id 
@@ -1323,6 +1708,395 @@ export function AdminDashboardContent() {
                   <Phone className="w-4 h-4 mr-2" />
                   Creează Rezervarea
                 </Button>
+              </div>
+            </CardContent>
+          </Card>
+        </div>
+      )}
+
+      {/* Add Lesson Modal */}
+      {showAddLesson && (
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
+          <Card className="w-full max-w-2xl max-h-[90vh] overflow-y-auto shadow-2xl">
+            <CardHeader className="border-b border-zinc-200">
+              <div className="flex items-center justify-between">
+                <CardTitle className="text-xl font-semibold text-zinc-900">
+                  Adaugă Lecție
+                </CardTitle>
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    onClick={() => {
+                      setShowAddLesson(false);
+                      setNewLesson({
+                        trainerId: null,
+                        startTime: '',
+                        endTime: '',
+                        courtId: null,
+                      });
+                      setLessonDate(new Date());
+                    }}
+                  >
+                    <X className="w-4 h-4" />
+                  </Button>
+              </div>
+            </CardHeader>
+            <CardContent className="space-y-6 pt-6">
+              {/* Trainer Selection */}
+              <div>
+                <div className="flex items-center justify-between mb-2">
+                  <label className="text-sm font-medium text-zinc-700">
+                    Antrenor *
+                  </label>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => setShowManageTrainers(true)}
+                    className="text-xs"
+                  >
+                    <Plus className="w-3 h-3 mr-1" />
+                    Gestionează Antrenori
+                  </Button>
+                </div>
+                {trainers.length === 0 ? (
+                  <div className="p-4 border border-zinc-300 rounded-md bg-zinc-50 text-center">
+                    <p className="text-sm text-zinc-600 mb-2">Nu există antrenori adăugați.</p>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={() => setShowManageTrainers(true)}
+                    >
+                      Adaugă Primul Antrenor
+                    </Button>
+                  </div>
+                ) : (
+                  <select
+                    value={newLesson.trainerId || ''}
+                    onChange={(e) => setNewLesson(prev => ({ ...prev, trainerId: e.target.value }))}
+                    className="w-full px-3 py-2 border border-zinc-300 rounded-md focus:outline-none focus:ring-2 focus:ring-purple-500"
+                  >
+                    <option value="">Selectează un antrenor</option>
+                    {trainers.map((trainer) => (
+                      <option key={trainer.id} value={trainer.id}>
+                        {trainer.name} {trainer.phone ? `(${trainer.phone})` : ''}
+                      </option>
+                    ))}
+                  </select>
+                )}
+              </div>
+
+              {/* Date */}
+              <div>
+                <label className="text-sm font-medium text-zinc-700 mb-2 block">
+                  Data Lecției *
+                </label>
+                <Popover>
+                  <PopoverTrigger asChild>
+                    <Button
+                      variant="outline"
+                      className="w-full justify-start text-left font-normal"
+                    >
+                      <Calendar className="mr-2 h-4 w-4" />
+                      {lessonDate ? format(lessonDate, "PPP", { locale: ro }) : <span>Alege o dată</span>}
+                    </Button>
+                  </PopoverTrigger>
+                  <PopoverContent className="w-auto p-0" align="start">
+                    <CalendarComponent
+                      mode="single"
+                      selected={lessonDate}
+                      onSelect={(date) => date && setLessonDate(date)}
+                      initialFocus
+                    />
+                  </PopoverContent>
+                </Popover>
+              </div>
+
+              {/* Start Time */}
+              <div>
+                <label className="text-sm font-medium text-zinc-700 mb-2 block">
+                  Ora de Început *
+                </label>
+                <input
+                  type="time"
+                  value={newLesson.startTime}
+                  onChange={(e) => setNewLesson(prev => ({ ...prev, startTime: e.target.value }))}
+                  className="w-full px-3 py-2 border border-zinc-300 rounded-md focus:outline-none focus:ring-2 focus:ring-purple-500"
+                />
+              </div>
+
+              {/* End Time */}
+              <div>
+                <label className="text-sm font-medium text-zinc-700 mb-2 block">
+                  Ora de Sfârșit *
+                </label>
+                <input
+                  type="time"
+                  value={newLesson.endTime}
+                  onChange={(e) => setNewLesson(prev => ({ ...prev, endTime: e.target.value }))}
+                  className="w-full px-3 py-2 border border-zinc-300 rounded-md focus:outline-none focus:ring-2 focus:ring-purple-500"
+                />
+              </div>
+
+              {/* Court Selection (if applicable) */}
+              {courts.length > 0 && (
+                <div>
+                  <label className="text-sm font-medium text-zinc-700 mb-2 block">
+                    Teren *
+                  </label>
+                  <div className="grid grid-cols-2 md:grid-cols-3 gap-2">
+                    {courts.map((court) => {
+                      const courtUnavail = unavailableCourts.get(court.id);
+                      const isCourtUnavailable = newLesson.startTime 
+                        ? (courtUnavail?.has(newLesson.startTime) || false)
+                        : false;
+                      
+                      return (
+                        <Button
+                          key={court.id}
+                          variant={newLesson.courtId === court.id ? "default" : "outline"}
+                          onClick={() => {
+                            if (!isCourtUnavailable || !newLesson.startTime) {
+                              setNewLesson(prev => ({ ...prev, courtId: court.id }));
+                            }
+                          }}
+                          disabled={false}
+                          className=""
+                          title=""
+                        >
+                          {court.name}
+                          {isCourtUnavailable && newLesson.startTime && (
+                            <span className="ml-1 text-xs">🔒</span>
+                          )}
+                        </Button>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
+
+              {/* Action Buttons */}
+              <div className="flex gap-2 pt-4">
+                <Button
+                  variant="outline"
+                  onClick={() => {
+                    setShowAddLesson(false);
+                    setNewLesson({
+                      trainerId: null,
+                      startTime: '',
+                      endTime: '',
+                      courtId: null,
+                    });
+                    setLessonDate(new Date());
+                  }}
+                  className="flex-1"
+                >
+                  Anulează
+                </Button>
+                <Button
+                  onClick={handleCreateLesson}
+                  className="flex-1 bg-purple-600 hover:bg-purple-700"
+                  disabled={!lessonDate || !newLesson.startTime || !newLesson.endTime || !newLesson.trainerId || (courts.length > 0 && !newLesson.courtId)}
+                >
+                  <Plus className="w-4 h-4 mr-2" />
+                  Creează Lecția
+                </Button>
+              </div>
+            </CardContent>
+          </Card>
+        </div>
+      )}
+
+      {/* Manage Trainers Modal */}
+      {showManageTrainers && (
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
+          <Card className="w-full max-w-3xl max-h-[90vh] overflow-y-auto shadow-2xl">
+            <CardHeader className="border-b border-zinc-200">
+              <div className="flex items-center justify-between">
+                <CardTitle className="text-xl font-semibold text-zinc-900">
+                  Gestionează Antrenori
+                </CardTitle>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => {
+                    setShowManageTrainers(false);
+                    setNewTrainer({
+                      name: '',
+                      phone: '',
+                      email: '',
+                      notes: '',
+                    });
+                  }}
+                >
+                  <X className="w-4 h-4" />
+                </Button>
+              </div>
+            </CardHeader>
+            <CardContent className="space-y-6 pt-6">
+              {/* Add New Trainer */}
+              <div className="border-b border-zinc-200 pb-6">
+                <h3 className="text-lg font-semibold text-zinc-900 mb-4">Adaugă Antrenor Nou</h3>
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  <div>
+                    <label className="text-sm font-medium text-zinc-700 mb-2 block">
+                      Nume *
+                    </label>
+                    <input
+                      type="text"
+                      value={newTrainer.name}
+                      onChange={(e) => setNewTrainer(prev => ({ ...prev, name: e.target.value }))}
+                      className="w-full px-3 py-2 border border-zinc-300 rounded-md focus:outline-none focus:ring-2 focus:ring-purple-500"
+                      placeholder="Numele antrenorului"
+                    />
+                  </div>
+                  <div>
+                    <label className="text-sm font-medium text-zinc-700 mb-2 block">
+                      Telefon
+                    </label>
+                    <input
+                      type="tel"
+                      value={newTrainer.phone}
+                      onChange={(e) => setNewTrainer(prev => ({ ...prev, phone: e.target.value }))}
+                      className="w-full px-3 py-2 border border-zinc-300 rounded-md focus:outline-none focus:ring-2 focus:ring-purple-500"
+                      placeholder="07xxxxxxxx"
+                    />
+                  </div>
+                  <div>
+                    <label className="text-sm font-medium text-zinc-700 mb-2 block">
+                      Email
+                    </label>
+                    <input
+                      type="email"
+                      value={newTrainer.email}
+                      onChange={(e) => setNewTrainer(prev => ({ ...prev, email: e.target.value }))}
+                      className="w-full px-3 py-2 border border-zinc-300 rounded-md focus:outline-none focus:ring-2 focus:ring-purple-500"
+                      placeholder="email@example.com"
+                    />
+                  </div>
+                  <div>
+                    <label className="text-sm font-medium text-zinc-700 mb-2 block">
+                      Note
+                    </label>
+                    <input
+                      type="text"
+                      value={newTrainer.notes}
+                      onChange={(e) => setNewTrainer(prev => ({ ...prev, notes: e.target.value }))}
+                      className="w-full px-3 py-2 border border-zinc-300 rounded-md focus:outline-none focus:ring-2 focus:ring-purple-500"
+                      placeholder="Note suplimentare"
+                    />
+                  </div>
+                </div>
+                <Button
+                  onClick={async () => {
+                    if (!selectedField || !newTrainer.name) {
+                      alert('Te rugăm să completezi numele antrenorului.');
+                      return;
+                    }
+
+                    const { error } = await supabase
+                      .from('trainers')
+                      .insert({
+                        field_id: selectedField,
+                        name: newTrainer.name,
+                        phone: newTrainer.phone || null,
+                        email: newTrainer.email || null,
+                        notes: newTrainer.notes || null,
+                      } as any);
+
+                    if (error) {
+                      console.error('Error creating trainer:', error);
+                      alert('Eroare la crearea antrenorului: ' + error.message);
+                      return;
+                    }
+
+                    // Refresh trainers
+                    const { data: trainersData } = await supabase
+                      .from('trainers')
+                      .select('*')
+                      .eq('field_id', selectedField)
+                      .eq('is_active', true)
+                      .order('name');
+
+                    if (trainersData) {
+                      setTrainers((trainersData || []) as Trainer[]);
+                    }
+
+                    setNewTrainer({
+                      name: '',
+                      phone: '',
+                      email: '',
+                      notes: '',
+                    });
+                  }}
+                  className="mt-4 bg-purple-600 hover:bg-purple-700"
+                  disabled={!newTrainer.name}
+                >
+                  <Plus className="w-4 h-4 mr-2" />
+                  Adaugă Antrenor
+                </Button>
+              </div>
+
+              {/* Trainers List */}
+              <div>
+                <h3 className="text-lg font-semibold text-zinc-900 mb-4">Antrenori Existenți</h3>
+                {trainers.length === 0 ? (
+                  <p className="text-sm text-zinc-500 text-center py-8">Nu există antrenori adăugați.</p>
+                ) : (
+                  <div className="space-y-2">
+                    {trainers.map((trainer) => (
+                      <div
+                        key={trainer.id}
+                        className="p-4 border border-zinc-200 rounded-md flex items-center justify-between"
+                      >
+                        <div>
+                          <p className="font-semibold text-zinc-900">{trainer.name}</p>
+                          {trainer.phone && (
+                            <p className="text-sm text-zinc-600">Telefon: {trainer.phone}</p>
+                          )}
+                          {trainer.email && (
+                            <p className="text-sm text-zinc-600">Email: {trainer.email}</p>
+                          )}
+                          {trainer.notes && (
+                            <p className="text-sm text-zinc-500 italic">{trainer.notes}</p>
+                          )}
+                        </div>
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          onClick={async () => {
+                            if (confirm(`Ești sigur că vrei să ștergi antrenorul ${trainer.name}?`)) {
+                              const { error } = await supabase
+                                .from('trainers')
+                                .update({ is_active: false })
+                                .eq('id', trainer.id);
+
+                              if (error) {
+                                console.error('Error deleting trainer:', error);
+                                alert('Eroare la ștergerea antrenorului: ' + error.message);
+                                return;
+                              }
+
+                              // Refresh trainers
+                              const { data: trainersData } = await supabase
+                                .from('trainers')
+                                .select('*')
+                                .eq('field_id', selectedField)
+                                .eq('is_active', true)
+                                .order('name');
+
+                              if (trainersData) {
+                                setTrainers((trainersData || []) as Trainer[]);
+                              }
+                            }
+                          }}
+                          className="text-red-600 hover:text-red-700"
+                        >
+                          <X className="w-4 h-4" />
+                        </Button>
+                      </div>
+                    ))}
+                  </div>
+                )}
               </div>
             </CardContent>
           </Card>
